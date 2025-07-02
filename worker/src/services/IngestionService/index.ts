@@ -776,6 +776,15 @@ export class IngestionService {
 
       finalCostDetails.total = finalTotalCost;
     }
+    
+    if (
+      observationRecord.name?.endsWith(".run")
+    ) {
+      finalCostDetails.input = 0;
+      finalCostDetails.output = 0;
+      finalCostDetails.total = 0;
+      finalTotalCost = 0;
+    }
 
     return {
       cost_details: finalCostDetails,
