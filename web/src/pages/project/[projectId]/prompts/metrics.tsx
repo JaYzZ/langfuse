@@ -7,12 +7,6 @@ import { useRouter } from "next/router";
 import { api } from "@/src/utils/api";
 import { NumberParam, useQueryParams, withDefault } from "use-query-params";
 import { type RouterOutput } from "@/src/utils/types";
-import {
-  TabsBar,
-  TabsBarList,
-  TabsBarTrigger,
-} from "@/src/components/ui/tabs-bar";
-import Link from "next/link";
 import TableLink from "@/src/components/table/table-link";
 import { numberFormatter, usdFormatter } from "@/src/utils/numbers";
 import { formatIntervalSeconds } from "@/src/utils/dates";
@@ -24,6 +18,11 @@ import { useIndividualScoreColumns } from "@/src/features/scores/hooks/useIndivi
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
 import Page from "@/src/components/layouts/page";
 import { DetailPageNav } from "@/src/features/navigate-detail-pages/DetailPageNav";
+import { TruncatedLabels } from "@/src/components/TruncatedLabels";
+import {
+  getPromptTabs,
+  PROMPT_TABS,
+} from "@/src/features/navigation/utils/prompt-tabs";
 
 export type PromptVersionTableRow = {
   version: number;
@@ -77,14 +76,16 @@ function joinPromptCoreAndMetricData(
   return { status: "success", combinedData };
 }
 
-export default function PromptVersionTable({ promptName: promptNameProp }: { promptName?: string } = {}) {
+export default function PromptVersionTable({
+  promptName: promptNameProp,
+}: { promptName?: string } = {}) {
   const router = useRouter();
   const projectId = router.query.projectId as string;
-  const promptName = promptNameProp || (
-    router.query.promptName
+  const promptName =
+    promptNameProp ||
+    (router.query.promptName
       ? decodeURIComponent(router.query.promptName as string)
-      : ''
-  );
+      : "");
 
   const [paginationState, setPaginationState] = useQueryParams({
     pageIndex: withDefault(NumberParam, 0),
@@ -174,16 +175,12 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
         const values: string[] = row.getValue("labels");
         return (
           values && (
-            <div className="-mr-8 flex max-h-full flex-wrap gap-1">
-              {values.map((value) => (
-                <div
-                  key={value}
-                  className="max-h-fit min-h-6 w-fit content-center rounded-sm bg-secondary px-1 text-left text-xs font-semibold text-secondary-foreground"
-                >
-                  {value}
-                </div>
-              ))}
-            </div>
+            <TruncatedLabels
+              labels={values}
+              maxVisibleLabels={3}
+              className="-mr-8 flex max-h-full flex-wrap gap-1"
+              showSimpleBadges={true}
+            />
           )
         );
       },
@@ -410,20 +407,10 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
             listKey="prompts"
           />
         ),
-        tabsComponent: (
-          <TabsBar value="metrics">
-            <TabsBarList>
-              <TabsBarTrigger value="versions" asChild>
-                <Link
-                  href={`/project/${projectId}/prompts/${encodeURIComponent(promptName)}`}
-                >
-                  Versions
-                </Link>
-              </TabsBarTrigger>
-              <TabsBarTrigger value="metrics">Metrics</TabsBarTrigger>
-            </TabsBarList>
-          </TabsBar>
-        ),
+        tabsProps: {
+          tabs: getPromptTabs(projectId, promptName),
+          activeTab: PROMPT_TABS.METRICS,
+        },
       }}
     >
       <div className="gap-3">
@@ -438,6 +425,7 @@ export default function PromptVersionTable({ promptName: promptNameProp }: { pro
         />
       </div>
       <DataTable
+        tableName={"promptVersions"}
         columns={columns}
         data={
           promptVersions.isLoading

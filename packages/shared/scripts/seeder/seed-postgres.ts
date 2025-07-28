@@ -4,15 +4,16 @@ import { hash } from "bcryptjs";
 import { v4 } from "uuid";
 import { encrypt } from "../../src/encryption";
 import {
-	type JobConfiguration,
-	JobExecutionStatus,
-	PrismaClient,
-	type Project,
-	ScoreDataType,
+  type JobConfiguration,
+  JobExecutionStatus,
+  PrismaClient,
+  type Project,
+  ScoreDataType,
 } from "../../src/index";
 import { getDisplaySecretKey, hashSecretKey, logger } from "../../src/server";
 import { redis } from "../../src/server/redis/redis";
-import {EVAL_TRACE_COUNT,
+import {
+  EVAL_TRACE_COUNT,
   FAILED_EVAL_TRACE_INTERVAL,
   SEED_CHAT_ML_PROMPTS,
   SEED_DATASETS,
@@ -22,6 +23,7 @@ import {EVAL_TRACE_COUNT,
   SEED_TEXT_PROMPTS,
 } from "./utils/postgres-seed-constants";
 import {
+  generateDatasetItemId,
   generateDatasetRunTraceId,
   generateEvalObservationId,
   generateEvalScoreId,
@@ -178,7 +180,7 @@ async function main() {
 
   const seedApiKey = {
     id: "seed-api-key",
-    secret: process.env.SEED_SECRET_KEY ?? "sk-lf-1234567890",
+    secret: process.env.SEED_SECRET_KEY ?? "sk-lf-1234567890", // eslint-disable-line turbo/no-undeclared-env-vars
     public: "pk-lf-1234567890",
     note: "seeded key",
   };
@@ -241,7 +243,7 @@ async function main() {
 
     const secondKey = {
       id: "seed-api-key-2",
-      secret: process.env.SEED_SECRET_KEY ?? "sk-lf-asdfghjkl",
+      secret: process.env.SEED_SECRET_KEY ?? "sk-lf-asdfghjkl", // eslint-disable-line turbo/no-undeclared-env-vars
       public: "pk-lf-asdfghjkl",
       note: "seeded key 2",
     };
@@ -274,7 +276,7 @@ async function main() {
     await createTraceSessions(project1, project2);
 
     // If openai key is in environment, add it to the projects LLM API keys
-    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY; // eslint-disable-line turbo/no-undeclared-env-vars
 
     if (OPENAI_API_KEY) {
       await prisma.llmApiKeys.create({
@@ -516,6 +518,7 @@ export async function createDatasets(
             description: data.description,
             projectId,
             metadata: data.metadata,
+            id: `${datasetName}-${projectId.slice(-8)}`,
           },
         }));
 
@@ -531,13 +534,23 @@ export async function createDatasets(
         const datasetItem = await prisma.datasetItem.upsert({
           where: {
             id_projectId: {
-              id: `${dataset.id}-${index}`,
+              id: generateDatasetItemId(
+                datasetName,
+                index,
+                projectId,
+                SEED_DATASETS.indexOf(data) || 0,
+              ),
               projectId,
             },
           },
           create: {
             projectId,
-            id: `${dataset.id}-${index}`,
+            id: generateDatasetItemId(
+              datasetName,
+              index,
+              projectId,
+              SEED_DATASETS.indexOf(data) || 0,
+            ),
             datasetId: dataset.id,
             sourceTraceId: sourceTraceId ?? null,
             sourceObservationId: null,
@@ -553,14 +566,14 @@ export async function createDatasets(
       for (let datasetRunNumber = 0; datasetRunNumber < 3; datasetRunNumber++) {
         const datasetRun = await prisma.datasetRuns.upsert({
           where: {
-            datasetId_projectId_name: {
-              datasetId: dataset.id,
+            id_projectId: {
+              id: `demo-dataset-run-${datasetRunNumber}-${projectId.slice(-8)}`,
               projectId,
-              name: `demo-dataset-run-${datasetRunNumber}`,
             },
           },
           create: {
             projectId,
+            id: `demo-dataset-run-${datasetRunNumber}-${projectId.slice(-8)}`,
             name: `demo-dataset-run-${datasetRunNumber}`,
             description: Math.random() > 0.5 ? "Dataset run description" : "",
             datasetId: dataset.id,

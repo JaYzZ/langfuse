@@ -1,11 +1,18 @@
-import { Terminal } from "lucide-react";
+import { Terminal, ChevronDown } from "lucide-react";
 import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/router";
 import { z } from "zod/v4";
+import { v4 as uuidv4 } from "uuid";
 
 import { createEmptyMessage } from "@/src/components/ChatMessages/utils/createEmptyMessage";
 import { Button } from "@/src/components/ui/button";
-import usePlaygroundCache from "@/src/features/playground/page/hooks/usePlaygroundCache";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/src/components/ui/dropdown-menu";
+import { usePersistedWindowIds } from "@/src/features/playground/page/hooks/usePersistedWindowIds";
 import {
   type PlaygroundCache,
   type PlaygroundSchema,
@@ -32,8 +39,13 @@ import {
   isPlaceholder,
   PromptType,
 } from "@langfuse/shared";
+import {
+  LANGGRAPH_NODE_TAG,
+  LANGGRAPH_STEP_TAG,
+} from "@/src/features/trace-graph-view/types";
 import { api } from "@/src/utils/api";
 import { cn } from "@/src/utils/tailwind";
+import usePlaygroundCache from "@/src/features/playground/page/hooks/usePlaygroundCache";
 
 type JumpToPlaygroundButtonProps = (
   | {
@@ -61,9 +73,20 @@ export const JumpToPlaygroundButton: React.FC<JumpToPlaygroundButtonProps> = (
   const router = useRouter();
   const capture = usePostHogClientCapture();
   const projectId = useProjectIdFromURL();
-  const { setPlaygroundCache } = usePlaygroundCache();
+  const { addWindowWithId, clearAllCache } = usePersistedWindowIds();
   const [capturedState, setCapturedState] = useState<PlaygroundCache>(null);
   const [isAvailable, setIsAvailable] = useState<boolean>(false);
+
+  // Generate a stable window ID based on the source data
+  const stableWindowId = useMemo(() => {
+    if (props.source === "prompt") {
+      return `playground-prompt-${props.prompt.id}`;
+    } else if (props.source === "generation") {
+      return `playground-generation-${props.generation.id}`;
+    }
+    return `playground-${uuidv4()}`;
+  }, [props]);
+  const { setPlaygroundCache } = usePlaygroundCache(stableWindowId);
 
   const apiKeys = api.llmApiKey.all.useQuery(
     {
@@ -108,36 +131,131 @@ export const JumpToPlaygroundButton: React.FC<JumpToPlaygroundButtonProps> = (
     }
   }, [capturedState, setIsAvailable]);
 
-  const handleClick = () => {
-    capture(props.analyticsEventName);
-    setPlaygroundCache(capturedState);
+  const handlePlaygroundAction = (useFreshPlayground: boolean) => {
+    capture(props.analyticsEventName, {
+      playgroundMode: useFreshPlayground ? "fresh" : "add_to_existing",
+    });
 
-    router.push(`/project/${projectId}/playground`);
+    // First, ensure we have state to save
+    if (!capturedState) {
+      console.warn("No captured state available for playground");
+      return;
+    }
+
+    if (useFreshPlayground) {
+      // Clear all existing playground data and reset to single window
+      clearAllCache(stableWindowId);
+    } else {
+      // Add to existing playground
+      const addedWindowId = addWindowWithId(stableWindowId);
+
+      if (!addedWindowId) {
+        console.warn(
+          "Failed to add window to existing playground, maximum windows reached",
+        );
+        return;
+      }
+    }
+
+    // Use requestAnimationFrame to ensure the state update has been processed
+    requestAnimationFrame(() => {
+      try {
+        setPlaygroundCache(capturedState);
+        console.log(
+          `Cache saved for existing playground window ${stableWindowId}`,
+        );
+
+        // Navigate after cache is successfully saved
+        router.push(`/project/${projectId}/playground`);
+      } catch (error) {
+        console.error("Failed to save playground cache:", error);
+        // Navigate anyway, but user might not see their data
+        router.push(`/project/${projectId}/playground`);
+      }
+    });
   };
 
+  const tooltipMessage = isAvailable
+    ? "Test in LLM playground"
+    : "Test in LLM playground is not available since messages are not in valid ChatML format or tool calls have been used. If you think this is not correct, please open a GitHub issue.";
+
   return (
-    <Button
-      variant={props.variant ?? "secondary"}
-      disabled={!isAvailable}
-      title={
-        isAvailable
-          ? "Test in LLM playground"
-          : "Test in LLM playground is not available since messages are not in valid ChatML format or tool calls have been used. If you think this is not correct, please open a GitHub issue."
-      }
-      onClick={handleClick}
-      asChild
-      className={
-        !isAvailable ? "cursor-not-allowed opacity-50" : "cursor-pointer"
-      }
-    >
-      <span>
-        <Terminal className="h-4 w-4" />
-        <span className={cn("hidden md:ml-2 md:inline", props.className)}>
-          Playground
-        </span>
-      </span>
-    </Button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant={props.variant ?? "secondary"}
+          disabled={!isAvailable}
+          title={tooltipMessage}
+          className={cn(
+            "flex items-center gap-1",
+            !isAvailable ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+          )}
+        >
+          <Terminal className="h-4 w-4" />
+          <span className={cn("hidden md:inline", props.className)}>
+            Playground
+          </span>
+          <ChevronDown className="h-3 w-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onClick={() => handlePlaygroundAction(true)}>
+          <Terminal className="mr-2 h-4 w-4" />
+          Fresh playground
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handlePlaygroundAction(false)}>
+          <Terminal className="mr-2 h-4 w-4" />
+          Add to existing
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
+};
+
+// Is LangGraph Trace? Decide from metadata. If so, we might need to recognise roles as tool names
+const isLangGraphTrace = (generation: { metadata: string | null }): boolean => {
+  if (!generation.metadata) return false;
+
+  try {
+    let metadata = generation.metadata;
+    if (typeof metadata === "string") {
+      metadata = JSON.parse(metadata);
+    }
+
+    if (typeof metadata === "object" && metadata !== null) {
+      return LANGGRAPH_NODE_TAG in metadata || LANGGRAPH_STEP_TAG in metadata;
+    }
+  } catch {
+    // Ignore JSON parsing errors
+  }
+
+  return false;
+};
+
+// Normalize LangGraph tool messages by converting tool-name roles to "tool"
+const normalizeLangGraphMessage = (
+  message: unknown,
+  isLangGraph: boolean = false,
+): unknown => {
+  if (!message || typeof message !== "object" || !("role" in message)) {
+    return message;
+  }
+
+  const validRoles = Object.values(ChatMessageRole);
+
+  if (isLangGraph && !validRoles.includes(message.role as ChatMessageRole)) {
+    // LangGraph sets role to tool name instead of "tool"
+    // Convert to proper tool message format
+    return {
+      ...message,
+      role: ChatMessageRole.Tool,
+      // TODO: remove?
+      // Preserve original role in case needed for debugging
+      _originalRole: message.role,
+    };
+  }
+
+  return message;
 };
 
 const ParsedChatMessageListSchema = z.array(
@@ -170,9 +288,10 @@ const ParsedChatMessageListSchema = z.array(
             .optional(),
         })
         .optional(),
+      _originalRole: z.string().optional(), // original LangGraph role
     }),
     PlaceholderMessageSchema,
-  ])
+  ]),
 );
 
 // Langchain integration has the tool definition in a tool message
@@ -192,7 +311,8 @@ const isLangchainToolDefinitionMessage = (
 
 const transformToPlaygroundMessage = (
   message: z.infer<typeof ParsedChatMessageListSchema>[0],
-): ChatMessage | PlaceholderMessage => {
+  allMessages?: z.infer<typeof ParsedChatMessageListSchema>,
+): ChatMessage | PlaceholderMessage | null => {
   // Return placeholder messages as-is
   if (isPlaceholder(message)) {
     return message;
@@ -207,7 +327,9 @@ const transformToPlaygroundMessage = (
     (regularMessage.tool_calls || regularMessage.additional_kwargs?.tool_calls)
   ) {
     const toolCalls =
-      regularMessage.tool_calls ?? regularMessage.additional_kwargs?.tool_calls ?? [];
+      regularMessage.tool_calls ??
+      regularMessage.additional_kwargs?.tool_calls ??
+      [];
 
     const playgroundMessage: ChatMessage = {
       role: ChatMessageRole.Assistant,
@@ -228,11 +350,46 @@ const transformToPlaygroundMessage = (
 
     return playgroundMessage;
   } else if (regularMessage.role === "tool") {
+    let toolCallId = (regularMessage as any).tool_call_id;
+
+    // Try to infer if tool_call_id is missing or empty (eg langgraph case)
+    if (!toolCallId && allMessages && regularMessage._originalRole) {
+      // Find all assistant messages with tool calls, most recent first
+      const assistantMessages = allMessages
+        .filter(
+          (msg): msg is Exclude<typeof msg, PlaceholderMessage> =>
+            !isPlaceholder(msg) &&
+            msg.role === "assistant" &&
+            !!(msg.tool_calls || msg.additional_kwargs?.tool_calls),
+        )
+        .reverse();
+
+      // Look for the first matching tool call by name
+      for (const prevMessage of assistantMessages) {
+        const toolCalls =
+          prevMessage.tool_calls ??
+          prevMessage.additional_kwargs?.tool_calls ??
+          [];
+
+        const matchingCall = toolCalls.find((tc) => {
+          if ("function" in tc) {
+            return tc.function.name === regularMessage._originalRole;
+          }
+          return tc.name === regularMessage._originalRole;
+        });
+
+        if (matchingCall && matchingCall.id) {
+          toolCallId = matchingCall.id;
+          break;
+        }
+      }
+    }
+
     const playgroundMessage: ChatMessage = {
       role: ChatMessageRole.Tool,
       content,
       type: ChatMessageType.ToolResult,
-      toolCallId: regularMessage.tool_call_id ?? "",
+      toolCallId: toolCallId || "",
     };
 
     return playgroundMessage;
@@ -249,13 +406,36 @@ const parsePrompt = (
   prompt: Prompt & { resolvedPrompt?: Prisma.JsonValue },
 ): PlaygroundCache => {
   if (prompt.type === PromptType.Chat) {
-    const parsedMessages = ParsedChatMessageListSchema.safeParse(
-      prompt.resolvedPrompt,
-    );
+    // For prompts, we can't detect LangGraph from metadata, so we check for invalid roles
+    // If any msg has an invalid role, we assume it might be LangGraph format
+    const isLangGraph =
+      Array.isArray(prompt.resolvedPrompt) &&
+      (prompt.resolvedPrompt as any[]).some(
+        (msg) =>
+          msg &&
+          typeof msg === "object" &&
+          "role" in msg &&
+          !Object.values(ChatMessageRole).includes(msg.role as ChatMessageRole),
+      );
 
-    return parsedMessages.success
-      ? { messages: parsedMessages.data.map(transformToPlaygroundMessage) }
-      : null;
+    const normalizedMessages = Array.isArray(prompt.resolvedPrompt)
+      ? (prompt.resolvedPrompt as any[]).map((msg) =>
+          normalizeLangGraphMessage(msg, isLangGraph),
+        )
+      : prompt.resolvedPrompt;
+
+    const parsedMessages =
+      ParsedChatMessageListSchema.safeParse(normalizedMessages);
+
+    if (!parsedMessages.success) {
+      return null;
+    }
+
+    return {
+      messages: parsedMessages.data
+        .map((msg) => transformToPlaygroundMessage(msg, parsedMessages.data))
+        .filter((msg): msg is ChatMessage | PlaceholderMessage => msg !== null),
+    };
   } else {
     const promptString = prompt.resolvedPrompt;
 
@@ -281,8 +461,9 @@ const parseGeneration = (
 ): PlaygroundCache => {
   if (generation.type !== "GENERATION") return null;
 
+  const isLangGraph = isLangGraphTrace(generation);
   const modelParams = parseModelParams(generation, modelToProviderMap);
-  const tools = parseTools(generation);
+  const tools = parseTools(generation, isLangGraph);
   const structuredOutputSchema = parseStructuredOutputSchema(generation);
 
   let input = generation.input?.valueOf();
@@ -322,35 +503,58 @@ const parseGeneration = (
   }
 
   if (typeof input === "object") {
-    const parsedMessages = ParsedChatMessageListSchema.safeParse(
-      "messages" in input ? input["messages"] : input,
-    );
+    const messageData = "messages" in input ? input["messages"] : input;
+    const normalizedMessages = Array.isArray(messageData)
+      ? (messageData as any[]).map((msg) =>
+          normalizeLangGraphMessage(msg, isLangGraph),
+        )
+      : messageData;
 
-    if (parsedMessages.success)
-      return {
-        messages: parsedMessages.data
-          .filter((m) => !isLangchainToolDefinitionMessage(m))
-          .map(transformToPlaygroundMessage),
-        modelParams,
-        tools,
-        structuredOutputSchema,
-      };
+    const parsedMessages =
+      ParsedChatMessageListSchema.safeParse(normalizedMessages);
+
+    if (!parsedMessages.success) {
+      return null;
+    }
+
+    const filteredMessages = parsedMessages.data.filter(
+      (m) => !isLangchainToolDefinitionMessage(m),
+    );
+    return {
+      messages: filteredMessages
+        .map((msg) => transformToPlaygroundMessage(msg, filteredMessages))
+        .filter((msg): msg is ChatMessage | PlaceholderMessage => msg !== null),
+      modelParams,
+      tools,
+      structuredOutputSchema,
+    };
   }
 
   if (typeof input === "object" && "messages" in input) {
-    const parsedMessages = ParsedChatMessageListSchema.safeParse(
-      input["messages"],
-    );
+    const normalizedMessages = Array.isArray(input["messages"])
+      ? (input["messages"] as any[]).map((msg) =>
+          normalizeLangGraphMessage(msg, isLangGraph),
+        )
+      : input["messages"];
 
-    if (parsedMessages.success)
-      return {
-        messages: parsedMessages.data
-          .filter((m) => !isLangchainToolDefinitionMessage(m))
-          .map(transformToPlaygroundMessage),
-        modelParams,
-        tools,
-        structuredOutputSchema,
-      };
+    const parsedMessages =
+      ParsedChatMessageListSchema.safeParse(normalizedMessages);
+
+    if (!parsedMessages.success) {
+      return null;
+    }
+
+    const filteredMessages = parsedMessages.data.filter(
+      (m) => !isLangchainToolDefinitionMessage(m),
+    );
+    return {
+      messages: filteredMessages
+        .map((msg) => transformToPlaygroundMessage(msg, filteredMessages))
+        .filter((msg): msg is ChatMessage | PlaceholderMessage => msg !== null),
+      modelParams,
+      tools,
+      structuredOutputSchema,
+    };
   }
 
   return null;
@@ -404,6 +608,7 @@ function parseTools(
     output: string | null;
     metadata: string | null;
   },
+  isLangGraph: boolean = false,
 ): PlaygroundTool[] {
   // OpenAI Schema
   try {
@@ -424,9 +629,15 @@ function parseTools(
     const input = JSON.parse(generation.input as string);
 
     if (typeof input === "object" && input !== null) {
-      const parsedMessages = ParsedChatMessageListSchema.safeParse(
-        "messages" in input ? input["messages"] : input,
-      );
+      const messageData = "messages" in input ? input["messages"] : input;
+      const normalizedMessages = Array.isArray(messageData)
+        ? (messageData as any[]).map((msg) =>
+            normalizeLangGraphMessage(msg, isLangGraph),
+          )
+        : messageData;
+
+      const parsedMessages =
+        ParsedChatMessageListSchema.safeParse(normalizedMessages);
 
       if (parsedMessages.success)
         return parsedMessages.data

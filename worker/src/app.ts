@@ -16,7 +16,6 @@ import {
 } from "./queues/evalQueue";
 import { batchExportQueueProcessor } from "./queues/batchExportQueue";
 import { onShutdown } from "./utils/shutdown";
-
 import helmet from "helmet";
 import { cloudUsageMeteringQueueProcessor } from "./queues/cloudUsageMeteringQueue";
 import { WorkerManager } from "./queues/workerManager";
@@ -34,6 +33,8 @@ import {
 import { env } from "./env";
 import { ingestionQueueProcessorBuilder } from "./queues/ingestionQueue";
 import { BackgroundMigrationManager } from "./backgroundMigrations/backgroundMigrationManager";
+import { prisma } from "@langfuse/shared/src/db";
+import { ClickhouseReadSkipCache } from "./utils/clickhouseReadSkipCache";
 import { experimentCreateQueueProcessor } from "./queues/experimentQueue";
 import { traceDeleteProcessor } from "./queues/traceDelete";
 import { projectDeleteProcessor } from "./queues/projectDelete";
@@ -54,6 +55,8 @@ import {
 import { batchActionQueueProcessor } from "./queues/batchActionQueue";
 import { scoreDeleteProcessor } from "./queues/scoreDelete";
 import { DlqRetryService } from "./services/dlq/dlqRetryService";
+import { entityChangeQueueProcessor } from "./queues/entityChangeQueue";
+import { webhookProcessor } from "./queues/webhooks";
 
 const app = express();
 
@@ -77,6 +80,13 @@ if (env.LANGFUSE_ENABLE_BACKGROUND_MIGRATIONS === "true") {
     logger.error("Error running background migrations", err);
   });
 }
+
+// Initialize ClickhouseReadSkipCache on container start
+ClickhouseReadSkipCache.getInstance(prisma)
+  .initialize()
+  .catch((err) => {
+    logger.error("Error initializing ClickhouseReadSkipCache", err);
+  });
 
 if (env.QUEUE_CONSUMER_TRACE_UPSERT_QUEUE_IS_ENABLED === "true") {
   WorkerManager.register(
@@ -334,6 +344,22 @@ if (env.QUEUE_CONSUMER_DEAD_LETTER_RETRY_QUEUE_IS_ENABLED === "true") {
     DlqRetryService.retryDeadLetterQueue,
     {
       concurrency: 1,
+    },
+  );
+}
+
+if (env.QUEUE_CONSUMER_WEBHOOK_QUEUE_IS_ENABLED === "true") {
+  WorkerManager.register(QueueName.WebhookQueue, webhookProcessor, {
+    concurrency: env.LANGFUSE_WEBHOOK_QUEUE_PROCESSING_CONCURRENCY,
+  });
+}
+
+if (env.QUEUE_CONSUMER_ENTITY_CHANGE_QUEUE_IS_ENABLED === "true") {
+  WorkerManager.register(
+    QueueName.EntityChangeQueue,
+    entityChangeQueueProcessor,
+    {
+      concurrency: env.LANGFUSE_ENTITY_CHANGE_QUEUE_PROCESSING_CONCURRENCY,
     },
   );
 }

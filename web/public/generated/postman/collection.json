@@ -649,7 +649,7 @@
           "request": {
             "description": "List dataset run items",
             "url": {
-              "raw": "{{baseUrl}}/api/public/dataset-run-items?datasetId=&runName=&page=&limit=&response=",
+              "raw": "{{baseUrl}}/api/public/dataset-run-items?datasetId=&runName=&page=&limit=",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -678,11 +678,6 @@
                   "key": "limit",
                   "value": "",
                   "description": "limit of items per page"
-                },
-                {
-                  "key": "response",
-                  "value": "",
-                  "description": null
                 }
               ],
               "variable": []
@@ -1467,7 +1462,7 @@
           "request": {
             "description": "Get a list of observations",
             "url": {
-              "raw": "{{baseUrl}}/api/public/observations?page=&limit=&name=&userId=&type=&traceId=&parentObservationId=&environment=&fromStartTime=&toStartTime=&version=",
+              "raw": "{{baseUrl}}/api/public/observations?page=&limit=&name=&userId=&type=&traceId=&level=&parentObservationId=&environment=&fromStartTime=&toStartTime=&version=",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -1506,6 +1501,11 @@
                   "key": "traceId",
                   "value": "",
                   "description": null
+                },
+                {
+                  "key": "level",
+                  "value": "",
+                  "description": "Optional filter for observations with a specific level (e.g. \"DEBUG\", \"DEFAULT\", \"WARNING\", \"ERROR\")."
                 },
                 {
                   "key": "parentObservationId",

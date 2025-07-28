@@ -10,6 +10,8 @@ import {
   ChatMessageType,
   type ChatMessage,
   PromptService,
+  PROMPT_EXPERIMENT_ENVIRONMENT,
+  TraceParams,
   compileChatMessages,
   extractPlaceholderNames,
   type MessagePlaceholderValues,
@@ -24,14 +26,14 @@ import {
   LangfuseNotFoundError,
   type Prisma,
   PromptType,
+  QUEUE_ERROR_MESSAGES,
   stringifyValue,
 } from "@langfuse/shared";
 import { backOff } from "exponential-backoff";
-import { callLLM } from "../../features/utilities";
+import { callLLM, compileHandlebarString } from "../../features/utils";
 import { QueueJobs, redis } from "@langfuse/shared/src/server";
 import { randomUUID } from "node:crypto";
 import { v4 } from "uuid";
-import { compileHandlebarString } from "../../features/utilities";
 import { DatasetStatus } from "../../../../packages/shared/dist/prisma/generated/types";
 
 const isValidPrismaJsonObject = (
@@ -51,8 +53,8 @@ const replaceVariablesInPrompt = (
   const processContent = (content: string) => {
     // Extract only Handlebars variables from itemInput (exclude message placeholders)
     const filteredContext = Object.fromEntries(
-      Object.entries(itemInput).filter(([key]) =>
-        variables.includes(key) && !placeholderNames.includes(key)
+      Object.entries(itemInput).filter(
+        ([key]) => variables.includes(key) && !placeholderNames.includes(key),
       ),
     );
 
@@ -85,29 +87,34 @@ const replaceVariablesInPrompt = (
 
     // for stringified arrays (e.g. from dataset processing)
     let actualValue = value;
-    if (typeof value === 'string') {
+    if (typeof value === "string") {
       try {
         actualValue = JSON.parse(value);
       } catch (_e) {
-        throw new Error(`Invalid placeholder value for '${placeholderName}': unable to parse JSON`);
+        throw new Error(
+          `Invalid placeholder value for '${placeholderName}': unable to parse JSON`,
+        );
       }
     }
 
     if (!Array.isArray(actualValue)) {
-      throw new Error(`Placeholder '${placeholderName}' must be an array of messages`);
+      throw new Error(
+        `Placeholder '${placeholderName}' must be an array of messages`,
+      );
     }
 
-    const validMessages = actualValue.every(msg =>
-      typeof msg === 'object' &&
-      msg !== null &&
-      'role' in msg &&
-      'content' in msg
+    // Allow arbitrary objects - e.g. for users who want to pass ChatML messages.
+    // Used to validate for role and content key existence here.
+    const validMessages = actualValue.every(
+      (msg) => typeof msg === "object" && msg !== null,
     );
     if (!validMessages) {
-      throw new Error(`Invalid placeholder value for '${placeholderName}': messages must have 'role' and 'content' properties`);
+      throw new Error(
+        `Invalid placeholder value for '${placeholderName}': all items must be objects`,
+      );
     }
 
-    placeholderValues[placeholderName] = actualValue.map(msg => ({
+    placeholderValues[placeholderName] = actualValue.map((msg) => ({
       ...msg,
       type: ChatMessageType.PublicAPICreated as const,
     }));
@@ -116,12 +123,15 @@ const replaceVariablesInPrompt = (
   const compiledMessages = compileChatMessages(
     prompt as PromptMessage[],
     placeholderValues,
-    {}
+    {},
   );
 
   return compiledMessages.map((message) => ({
     ...message,
-    content: processContent(message.content),
+    // Only process content if it exists as string (for standard ChatMessages)
+    ...(typeof message.content === "string" && {
+      content: processContent(message.content),
+    }),
     type: ChatMessageType.PublicAPICreated as const,
   }));
 };
@@ -227,13 +237,13 @@ export const createExperimentJob = async ({
   });
   if (!apiKey) {
     throw new LangfuseNotFoundError(
-      `API key for provider ${provider} not found`,
+      `${QUEUE_ERROR_MESSAGES.API_KEY_ERROR} ${provider} not found`,
     );
   }
   const validatedApiKey = LLMApiKeySchema.safeParse(apiKey);
   if (!validatedApiKey.success) {
     throw new InvalidRequestError(
-      `API key for provider ${provider} not found.`,
+      `${QUEUE_ERROR_MESSAGES.API_KEY_ERROR} ${provider} not found.`,
     );
   }
 
@@ -257,9 +267,10 @@ export const createExperimentJob = async ({
   );
 
   // also extract placeholder names if prompt is a chat prompt
-  const placeholderNames = prompt?.type === PromptType.Chat && Array.isArray(validatedPrompt.data)
-    ? extractPlaceholderNames(validatedPrompt.data as PromptMessage[])
-    : [];
+  const placeholderNames =
+    prompt?.type === PromptType.Chat && Array.isArray(validatedPrompt.data)
+      ? extractPlaceholderNames(validatedPrompt.data as PromptMessage[])
+      : [];
   const allVariables = [...extractedVariables, ...placeholderNames];
 
   // validate dataset items against prompt configuration
@@ -272,6 +283,10 @@ export const createExperimentJob = async ({
         allVariables,
       ),
     }));
+
+  logger.info(
+    `Found ${validatedDatasetItems.length} validated dataset items for dataset run ${runId}`,
+  );
 
   if (!validatedDatasetItems.length) {
     throw new InvalidRequestError(
@@ -336,8 +351,8 @@ export const createExperimentJob = async ({
      * LLM MODEL CALL *
      ********************/
 
-    const traceParams = {
-      tags: ["langfuse-prompt-experiment"], // LFE-2917: filter out any trace in trace upsert queue that has this tag set
+    const traceParams: Omit<TraceParams, "tokenCountDelegate"> = {
+      environment: PROMPT_EXPERIMENT_ENVIRONMENT,
       traceName: `dataset-run-item-${runItem.id.slice(0, 5)}`,
       traceId: newTraceId,
       projectId: event.projectId,
